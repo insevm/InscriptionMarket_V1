@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.9;
+pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
@@ -12,7 +12,7 @@ import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "contracts/lib/Struct.sol";
 import "contracts/lib/Enum.sol";
 
-contract Market is
+contract InscriptionMarket_v1 is
     Ownable,
     EIP712,
     OrderParameterBase,
@@ -30,15 +30,10 @@ contract Market is
     // 100 / 10000
     uint256 public feeRate;
 
-    mapping(address => bool) public whitelist; // Users in the whitelist can enjoy free transaction fee
-
     // offerer => counter
     mapping(address => uint256) public counters;
     // order hash => status
     mapping(bytes32 => OrderStatus) public orderStatus;
-
-    // collection permission
-    mapping(address => bool) public collections;
 
     event OrderCancelled(address indexed canceller, uint256 indexed salt);
     event Sold(
@@ -46,7 +41,8 @@ contract Market is
         uint256 indexed salt,
         uint256 indexed time,
         address from,
-        address to
+        address to,
+        uint256 price
     );
     event SetFeeReceiver(address feeReceiver);
     event SetFeeRate(uint256 feeRate);
@@ -107,6 +103,7 @@ contract Market is
             revert OrderTypeError(offerItem.itemType, consideration.itemType);
         }
 
+        uint256 price;
         // Consideration
         if (
             consideration.itemType == ItemType.NATIVE ||
@@ -124,6 +121,7 @@ contract Market is
             }
 
             _serviceFee = consideration.startAmount * feeRate / 10000;
+            price = consideration.startAmount;
             if (consideration.itemType == ItemType.NATIVE) {
                 require(
                     msg.value >= consideration.startAmount,
@@ -132,7 +130,7 @@ contract Market is
                 payable(feeReceiver).transfer(_serviceFee);
                 unchecked {
                     payable(consideration.recipient).transfer(
-                            consideration.startAmount - _serviceFee
+                        consideration.startAmount - _serviceFee
                     );
                 }
             } else if (consideration.itemType == ItemType.ERC20) {
@@ -141,18 +139,20 @@ contract Market is
                     feeReceiver,
                     _serviceFee
                 );
-                unchecked {
-                    IERC20(consideration.token).safeTransferFrom(
-                        msg.sender,
-                        consideration.recipient,
-                        consideration.startAmount - _serviceFee
-                    );
-                }
+                IERC20(consideration.token).safeTransferFrom(
+                    msg.sender,
+                    consideration.recipient,
+                    consideration.startAmount - _serviceFee
+                );
             }
         } else if (
             consideration.itemType == ItemType.ERC721 ||
             consideration.itemType == ItemType.ERC1155
         ) {
+            if(offerItem.itemType != ItemType.ERC20){
+                // other offer type is not support
+                revert OrderTypeError(offerItem.itemType, consideration.itemType);
+            }
             if (consideration.itemType == ItemType.ERC721) {
                 IERC721(consideration.token).safeTransferFrom(
                     msg.sender,
@@ -189,18 +189,17 @@ contract Market is
                 );
             }
             _serviceFee = offerItem.startAmount * feeRate / 10000;
+            price = offerItem.startAmount;
             IERC20(offerItem.token).safeTransferFrom(
                 order.offerer,
                 feeReceiver,
                 _serviceFee
             );
-            unchecked {
-                IERC20(offerItem.token).safeTransferFrom(
-                    order.offerer,
-                    msg.sender,
-                        offerItem.startAmount - _serviceFee
-                );
-            }
+            IERC20(offerItem.token).safeTransferFrom(
+                order.offerer,
+                msg.sender,
+                offerItem.startAmount - _serviceFee
+            );
         } else if (
             offerItem.itemType == ItemType.ERC721 ||
             offerItem.itemType == ItemType.ERC1155
@@ -230,7 +229,7 @@ contract Market is
 
         _orderStatus.isValidated = true;
 
-        emit Sold(orderHash, order.salt, block.timestamp, from, to);
+        emit Sold(orderHash, order.salt, block.timestamp, from, to, price);
     }
 
     function cancel(OrderComponents[] calldata orders) external nonReentrant {
